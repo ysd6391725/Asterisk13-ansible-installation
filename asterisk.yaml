@@ -1,0 +1,200 @@
+---
+- hosts: test.aster.kz
+  become: yes
+  become_method: sudo
+  become_user: root
+  vars:
+    mysql_root_password: "Pa$$w0rd"
+    mysql_asterisk_user: "asterisk"
+    mysql_asterisk_password: "Pa$$w0rd"
+  tasks:
+   - name: Disable Selinux
+     selinux:
+       policy: targeted
+       state: disabled
+
+   - name: Instalation
+     yum:
+       name:
+         - e2fsprogs-devel 
+         - keyutils-libs-devel 
+         - krb5-devel 
+         - libogg 
+         - libselinux-devel 
+         - libsepol-devel 
+         - libxml2-devel 
+         - libtiff-devel 
+         - gmp 
+         - php-pear 
+         - php 
+         - php-gd 
+         - php-mysql 
+         - php-pdo 
+         - php-mbstring 
+         - ncurses-devel 
+         - mysql-connector-odbc 
+         - unixODBC 
+         - unixODBC-devel 
+         - audiofile-devel 
+         - libogg-devel 
+         - openssl-devel 
+         - zlib-devel  
+         - perl-DateManip 
+         - sox 
+         - git 
+         - wget 
+         - psmisc
+         - nano
+         - mc
+         - gcc 
+         - gcc-c++ 
+         - make 
+         - gnutls-devel 
+         - libxml2-devel 
+         - subversion 
+         - doxygen 
+         - texinfo 
+         - curl-devel 
+         - net-snmp-devel 
+         - neon-devel
+         - uuid-devel 
+         - libuuid-devel 
+         - sqlite-devel 
+         - sqlite 
+         - speex-devel 
+         - gsm-devel 
+         - libtool 
+         - libtool-ltdl 
+         - libtool-ltdl-devel
+         - mariadb-server
+         - mariadb
+         - mariadb-devel
+         - MySQL-python
+       state: present
+
+   - name: update system
+     yum:
+       name:
+         - '*'
+       state: latest
+     register: results
+
+   - debug: msg={{ results.changed }}
+
+   - name: reboot
+     shell: "sleep 5 && reboot"
+     async: 1
+     poll: 0
+     when: results.changed|bool == True
+
+   - name: Waiting for a response from the server
+     wait_for_connection:
+       connect_timeout: 20
+       sleep: 5
+       delay: 5
+       timeout: 300
+     when: results.changed|bool == True
+
+   - name: MariaDB start and enable
+     systemd:
+       name: mariadb
+       enabled: yes
+       state: started
+
+   - name: Set Mysql root password 
+     mysql_user: user=root password="{{ mysql_root_password }}" host=localhost
+     ignore_errors: True
+
+   - name: pjproject git clone 
+     git:
+       repo: https://github.com/asterisk/pjproject.git
+       dest: /usr/src/pjproject
+
+   - name: install pjproject
+     command: "{{ item }}"
+     args:
+       chdir: "/usr/src/pjproject/"
+     with_items:
+       - ./configure --libdir=/usr/lib64 --prefix=/usr --enable-shared --disable-sound --disable-resample
+       - make dep
+       - make
+       - make install
+       - ldconfig
+#####       - ldconfig -p | grep pj
+
+   - name: Download libjansson source
+     get_url:
+       url: "http://www.digip.org/jansson/releases/jansson-2.5.tar.gz"
+       dest: "/usr/src/"
+
+   - name: Decompress libjansson  source
+     unarchive:
+       src: "/usr/src/jansson-2.5.tar.gz"
+       dest: "/usr/src/"
+       remote_src: yes
+       list_files: yes
+     register: jansson_src_dir
+
+   - name: libjansson configure, make, make install
+     command: "{{ item }}"
+     args:
+       chdir: "/usr/src/{{ jansson_src_dir.files[0] }}"
+     with_items:
+       - ./configure --prefix=/usr/
+       - make clean
+       - make
+       - make install
+       - ldconfig
+
+   - name: Download asterisk source
+     get_url:
+       url: "http://downloads.asterisk.org/pub/telephony/asterisk/asterisk-13-current.tar.gz"
+       dest: "/usr/src/asterisk-13-current.tar.gz"
+
+   - name: Decompress asterisk source
+     unarchive:
+       src: "/usr/src/asterisk-13-current.tar.gz"
+       dest: "/usr/src/"
+       remote_src: yes
+       list_files: yes
+     register: asterisk_src_dir
+
+   - debug: msg={{ asterisk_src_dir.files[0] }}
+
+   - name: Configure asterisk
+     command: ./configure --libdir=/usr/lib64  chdir=/usr/src/{{ asterisk_src_dir.files[0] }}
+
+##   - name: get mp3
+##     shell: /usr/src/{{ asterisk_src_dir.files[0] }}contrib/scripts/get_mp3_source.sh
+
+
+   - name: Create menuselect.makeopts
+     command: make menuselect.makeopts chdir=/usr/src/{{ asterisk_src_dir.files[0] }}
+  
+   - name: menuselect configuration
+     command: >
+       menuselect/menuselect --enable app_macro 
+       --enable CORE-SOUNDS-EN-WAV --enable CORE-SOUNDS-EN-G722
+       --enable EXTRA-SOUNDS-EN-WAV --enable EXTRA-SOUNDS-EN-G722 --enable EXTRA-SOUNDS-EN-GSM
+       --disable-category MENUSELECT_MOH
+     args:
+       chdir: "/usr/src/{{ asterisk_src_dir.files[0] }}"
+
+   - name: Make
+     command: make chdir=/usr/src/{{ asterisk_src_dir.files[0] }}
+
+   - name: Install
+     command: make install chdir=/usr/src/{{ asterisk_src_dir.files[0] }}
+
+   - name: make config
+     command: make config chdir=/usr/src/{{ asterisk_src_dir.files[0] }}
+
+   - name: make samples
+     command: make samples chdir=/usr/src/{{ asterisk_src_dir.files[0] }}
+
+   - name: Astreisk start and enable
+     systemd:
+       name: asterisk
+       enabled: yes
+       state: started
+
